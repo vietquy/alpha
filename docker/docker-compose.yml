@@ -1,0 +1,278 @@
+version: "3.7"
+
+networks:
+  alpha-network:
+    driver: bridge
+
+volumes:
+  alpha-authn-db-volume:
+  alpha-users-db-volume:
+  alpha-things-db-volume:
+  alpha-mqtt-broker-volume:
+  alpha-influxdb-volume:
+  alpha-grafana-volume:
+
+services:
+  nginx:
+    image: nginx:1.16.0-alpine
+    container_name: alpha-nginx
+    restart: on-failure
+    volumes:
+      - ./nginx/nginx-key.conf:/etc/nginx/nginx.conf.template
+      - ./nginx/entrypoint.sh:/entrypoint.sh
+      - ./nginx/snippets:/etc/nginx/snippets
+    ports:
+      - ${AP_NGINX_HTTP_PORT}:${AP_NGINX_HTTP_PORT}
+      - ${AP_NGINX_MQTT_PORT}:${AP_NGINX_MQTT_PORT}
+    networks:
+      - alpha-network
+    env_file:
+      - .env
+    command: /entrypoint.sh
+    depends_on:
+      - things
+      - users
+      - mqtt-adapter
+      - http-adapter
+
+  nats:
+    image: nats:1.3.0
+    container_name: alpha-nats
+    command: "-c /etc/nats/nats.conf"
+    restart: on-failure
+    volumes:
+      - ./nats/:/etc/nats
+    networks:
+      - alpha-network
+
+  authn-db:
+    image: postgres:10.8-alpine
+    container_name: alpha-authn-db
+    restart: on-failure
+    environment:
+      POSTGRES_USER: ${AP_AUTHN_DB_USER}
+      POSTGRES_PASSWORD: ${AP_AUTHN_DB_PASS}
+      POSTGRES_DB: ${AP_AUTHN_DB}
+    networks:
+      - alpha-network
+    volumes:
+      - alpha-authn-db-volume:/var/lib/postgresql/data
+
+  authn:
+    image: alpha/authn:latest
+    container_name: alpha-authn
+    depends_on:
+      - authn-db
+    expose:
+      - ${AP_AUTHN_GRPC_PORT}
+    restart: on-failure
+    environment:
+      AP_AUTHN_LOG_LEVEL: ${AP_AUTHN_LOG_LEVEL}
+      AP_AUTHN_DB_HOST: authn-db
+      AP_AUTHN_DB_PORT: ${AP_AUTHN_DB_PORT}
+      AP_AUTHN_DB_USER: ${AP_AUTHN_DB_USER}
+      AP_AUTHN_DB_PASS: ${AP_AUTHN_DB_PASS}
+      AP_AUTHN_DB: ${AP_AUTHN_DB}
+      AP_AUTHN_HTTP_PORT: ${AP_AUTHN_HTTP_PORT}
+      AP_AUTHN_GRPC_PORT: ${AP_AUTHN_GRPC_PORT}
+      AP_AUTHN_SECRET: ${AP_AUTHN_SECRET}
+    ports:
+      - ${AP_AUTHN_HTTP_PORT}:${AP_AUTHN_HTTP_PORT}
+      - ${AP_AUTHN_GRPC_PORT}:${AP_AUTHN_GRPC_PORT}
+    networks:
+      - alpha-network
+
+  users-db:
+    image: postgres:10.8-alpine
+    container_name: alpha-users-db
+    restart: on-failure
+    environment:
+      POSTGRES_USER: ${AP_USERS_DB_USER}
+      POSTGRES_PASSWORD: ${AP_USERS_DB_PASS}
+      POSTGRES_DB: ${AP_USERS_DB}
+    networks:
+      - alpha-network
+    volumes:
+      - alpha-users-db-volume:/var/lib/postgresql/data
+
+  users:
+    image: alpha/users:latest
+    container_name: alpha-users
+    depends_on:
+      - users-db
+      - authn
+    restart: on-failure
+    environment:
+      AP_USERS_LOG_LEVEL: ${AP_USERS_LOG_LEVEL}
+      AP_USERS_DB_HOST: users-db
+      AP_USERS_DB_PORT: ${AP_USERS_DB_PORT}
+      AP_USERS_DB_USER: ${AP_USERS_DB_USER}
+      AP_USERS_DB_PASS: ${AP_USERS_DB_PASS}
+      AP_USERS_DB: ${AP_USERS_DB}
+      AP_USERS_HTTP_PORT: ${AP_USERS_HTTP_PORT}
+      AP_AUTHN_GRPC_URL: ${AP_AUTHN_GRPC_URL}
+      AP_AUTHN_GRPC_TIMEOUT: ${AP_AUTHN_GRPC_TIMEOUT}
+    ports:
+      - ${AP_USERS_HTTP_PORT}:${AP_USERS_HTTP_PORT}
+    networks:
+      - alpha-network
+
+  things-db:
+    image: postgres:10.8-alpine
+    container_name: alpha-things-db
+    restart: on-failure
+    environment:
+      POSTGRES_USER: ${AP_THINGS_DB_USER}
+      POSTGRES_PASSWORD: ${AP_THINGS_DB_PASS}
+      POSTGRES_DB: ${AP_THINGS_DB}
+    networks:
+      - alpha-network
+    volumes:
+      - alpha-things-db-volume:/var/lib/postgresql/data
+
+  things:
+    image: alpha/things:latest
+    container_name: alpha-things
+    depends_on:
+      - things-db
+      - authn
+    restart: on-failure
+    environment:
+      AP_THINGS_LOG_LEVEL: ${AP_THINGS_LOG_LEVEL}
+      AP_THINGS_DB_HOST: things-db
+      AP_THINGS_DB_PORT: ${AP_THINGS_DB_PORT}
+      AP_THINGS_DB_USER: ${AP_THINGS_DB_USER}
+      AP_THINGS_DB_PASS: ${AP_THINGS_DB_PASS}
+      AP_THINGS_DB: ${AP_THINGS_DB}
+      AP_THINGS_HTTP_PORT: ${AP_THINGS_HTTP_PORT}
+      AP_THINGS_GRPC_PORT: ${AP_THINGS_GRPC_PORT}
+      AP_THINGS_SECRET: ${AP_THINGS_SECRET}
+      AP_AUTHN_GRPC_URL: ${AP_AUTHN_GRPC_URL}
+      AP_AUTHN_GRPC_TIMEOUT: ${AP_AUTHN_GRPC_TIMEOUT}
+    ports:
+      - ${AP_THINGS_HTTP_PORT}:${AP_THINGS_HTTP_PORT}
+      - ${AP_THINGS_GRPC_PORT}:${AP_THINGS_GRPC_PORT}
+    networks:
+      - alpha-network
+
+  vernemq:
+    image: vernemq/vernemq:1.12.3-alpine
+    container_name: alpha-vernemq
+    restart: on-failure
+    environment:
+      DOCKER_VERNEMQ_ALLOW_ANONYMOUS: ${AP_DOCKER_VERNEMQ_ALLOW_ANONYMOUS}
+      DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL: ${AP_DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL}
+      DOCKER_VERNEMQ_ACCEPT_EULA: "yes"
+    networks:
+      - alpha-network
+    volumes:
+      - alpha-mqtt-broker-volume:/var/lib/vernemq
+
+  influxdb:
+    image: influxdb:1.6.4-alpine
+    container_name: alpha-influxdb
+    restart: on-failure
+    environment:
+      INFLUXDB_DB: ${AP_WRITER_DB}
+      INFLUXDB_ADMIN_USER: ${AP_WRITER_DB_USER}
+      INFLUXDB_ADMIN_PASSWORD: ${AP_WRITER_DB_PASS}
+    networks:
+      - alpha-network
+    ports:
+      - ${AP_WRITER_DB_PORT}:${AP_WRITER_DB_PORT}
+    volumes:
+      - alpha-influxdb-volume:/var/lib/influxdb
+
+  writer:
+    image: alpha/writer:latest
+    container_name: alpha-writer
+    depends_on:
+      - influxdb
+    restart: on-failure
+    environment:
+      AP_WRITER_LOG_LEVEL: debug
+      AP_NATS_URL: ${AP_NATS_URL}
+      AP_WRITER_PORT: ${AP_WRITER_PORT}
+      AP_WRITER_BATCH_SIZE: ${AP_WRITER_BATCH_SIZE}
+      AP_WRITER_BATCH_TIMEOUT: ${AP_WRITER_BATCH_TIMEOUT}
+      AP_WRITER_DB: ${AP_WRITER_DB}
+      AP_WRITER_DB_HOST: alpha-influxdb
+      AP_WRITER_DB_PORT: ${AP_WRITER_DB_PORT}
+      AP_WRITER_DB_USER: ${AP_WRITER_DB_USER}
+      AP_WRITER_DB_PASS: ${AP_WRITER_DB_PASS}
+    ports:
+      - ${AP_WRITER_PORT}:${AP_WRITER_PORT}
+    networks:
+      - alpha-network
+
+  grafana:
+    image: grafana/grafana:7.4.0
+    container_name: alpha-grafana
+    depends_on:
+      - influxdb
+    restart: on-failure
+    ports:
+      - ${AP_WRITER_GRAFANA_PORT}:${AP_GRAFANA_PORT}
+    networks:
+      - alpha-network
+    volumes:
+      - alpha-grafana-volume:/var/lib/grafana
+
+  reader:
+    image: alpha/reader:latest
+    container_name: alpha-reader
+    restart: on-failure
+    environment:
+      AP_READER_LOG_LEVEL: debug
+      AP_READER_PORT: ${AP_READER_PORT}
+      AP_READER_DB: ${AP_READER_DB}
+      AP_READER_DB_HOST: alpha-influxdb
+      AP_READER_DB_PORT: ${AP_READER_DB_PORT}
+      AP_READER_DB_USER: ${AP_READER_DB_USER}
+      AP_READER_DB_PASS: ${AP_READER_DB_PASS}
+      AP_THINGS_AUTH_GRPC_URL: ${AP_THINGS_AUTH_GRPC_URL}
+      AP_THINGS_AUTH_GRPC_TIMEOUT: ${AP_THINGS_AUTH_GRPC_TIMEOUT}
+    ports:
+      - ${AP_READER_PORT}:${AP_READER_PORT}
+    networks:
+      - alpha-network
+
+  http-adapter:
+    image: alpha/http:latest
+    container_name: alpha-http
+    depends_on:
+      - things
+      - nats
+    restart: on-failure
+    environment:
+      AP_HTTP_ADAPTER_LOG_LEVEL: debug
+      AP_HTTP_ADAPTER_PORT: ${AP_HTTP_ADAPTER_PORT}
+      AP_NATS_URL: ${AP_NATS_URL}
+      AP_THINGS_AUTH_GRPC_URL: ${AP_THINGS_AUTH_GRPC_URL}
+      AP_THINGS_AUTH_GRPC_TIMEOUT: ${AP_THINGS_AUTH_GRPC_TIMEOUT}
+    ports:
+      - ${AP_HTTP_ADAPTER_PORT}:${AP_HTTP_ADAPTER_PORT}
+    networks:
+      - alpha-network
+
+  mqtt-adapter:
+    image: alpha/mqtt:latest
+    container_name: alpha-mqtt
+    depends_on:
+      - vernemq
+      - things
+      - nats
+    restart: on-failure
+    environment:
+      AP_MQTT_ADAPTER_LOG_LEVEL: ${AP_MQTT_ADAPTER_LOG_LEVEL}
+      AP_MQTT_ADAPTER_MQTT_PORT: ${AP_MQTT_ADAPTER_MQTT_PORT}
+      AP_MQTT_ADAPTER_WS_PORT: ${AP_MQTT_ADAPTER_WS_PORT}
+      AP_NATS_URL: ${AP_NATS_URL}
+      AP_MQTT_ADAPTER_MQTT_TARGET_HOST: vernemq
+      AP_MQTT_ADAPTER_MQTT_TARGET_PORT: ${AP_MQTT_BROKER_PORT}
+      AP_MQTT_ADAPTER_WS_TARGET_HOST: vernemq
+      AP_MQTT_ADAPTER_WS_TARGET_PORT: ${AP_MQTT_BROKER_WS_PORT}
+      AP_THINGS_AUTH_GRPC_URL: ${AP_THINGS_AUTH_GRPC_URL}
+      AP_THINGS_AUTH_GRPC_TIMEOUT: ${AP_THINGS_AUTH_GRPC_TIMEOUT}
+    networks:
+      - alpha-network
